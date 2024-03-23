@@ -1,0 +1,6 @@
+[Path]
+PathExists=/var/home/core/pull-secret.txt
+
+[Install]
+WantedBy=multi-user.target
+

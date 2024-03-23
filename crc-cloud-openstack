@@ -1,0 +1,186 @@
+#!/bin/bash
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
+
+set -e
+
+pr_info() {
+    echo "[INF] $1"
+}
+
+pr_error() {
+    echo "[ERR] $1"
+}
+
+pr_end() {
+    echo "[END] $1"
+}
+
+if [ "$EUID" -eq 0 ]; then
+    pr_error "Please do not run as root."
+    exit 1
+fi
+
+if ! which guestmount > /dev/null; then
+    pr_error "guestmount not found, please install libguestfs"
+    exit 1
+fi
+
+SCRIPTPATH="$( cd "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+
+# Variables
+BUNDLE_VERSION=${BUNDLE_VERSION:-4.14.12}
+BUNDLE_URL=https://mirror.openshift.com/pub/openshift-v4/clients/crc/bundles/openshift/${BUNDLE_VERSION}/crc_libvirt_${BUNDLE_VERSION}_amd64.crcbundle
+WORKSPACE=${WORKSPACE:-${SCRIPTPATH}/workspace}
+LIBGUESTFS_BACKEND=${LIBGUESTFS_BACKEND:-direct}
+GUEST_MOUNT_POINT=${GUEST_MOUNT_POINT:-${WORKSPACE}/mnt}
+FILES_DIR=${FILES_DIR:-${SCRIPTPATH}/files}
+BASE_IMAGE_NAME=${BASE_IMAGE_NAME:-crc.qcow2}
+
+# CONSTANTS
+GUEST_VAR_DIR=${GUEST_MOUNT_POINT}/ostree/deploy/rhcos/var
+GUEST_USR_LOCAL_DIR=${GUEST_VAR_DIR}/usrlocal
+GUEST_USER_HOME_DIR=${GUEST_VAR_DIR}/home/core
+GUEST_BOOT_DIR=${GUEST_MOUNT_POINT}/boot
+
+mkdir -p ${WORKSPACE} 
+mkdir -p ${GUEST_MOUNT_POINT}
+
+
+function download_bundle {
+    pushd ${WORKSPACE} > /dev/null
+    
+    if ! [ -f "crc_libvirt_${BUNDLE_VERSION}_amd64.crcbundle" ]; then
+        pr_info "Downloading bundle"
+        curl --progress-bar -L -O ${BUNDLE_URL}
+    fi
+
+    if ! [ -d "crc_libvirt_${BUNDLE_VERSION}_amd64" ]; then
+        pr_info "Extracting bundle"
+        tar --checkpoint=.10000 -xf crc_libvirt_${BUNDLE_VERSION}_amd64.crcbundle
+        # 
+        echo && pr_info "Bundle extracted"
+    fi
+    
+    popd > /dev/null
+}
+
+function copy_base_image {
+    pushd ${WORKSPACE} > /dev/null
+
+    if [ -f crc-openstack-${BUNDLE_VERSION}.qcow2 ]; then
+        pr_info "Deleting old image"
+        rm -f crc-openstack-${BUNDLE_VERSION}.qcow2 > /dev/null
+    fi
+    pr_info "Creating a copy of the base image"
+    cp crc_libvirt_${BUNDLE_VERSION}_amd64/${BASE_IMAGE_NAME} crc-openstack-${BUNDLE_VERSION}.qcow2
+    
+    popd > /dev/null
+}
+
+function mount_image {
+    pushd ${WORKSPACE} > /dev/null
+
+    pr_info "Mounting image"
+    guestmount -a crc-openstack-${BUNDLE_VERSION}.qcow2 -m /dev/sda4 -m /dev/sda3:/boot ${GUEST_MOUNT_POINT}
+
+    popd > /dev/null
+}
+
+function sync_and_unmount_image {    
+    while [ $(dirs | wc -w) -gt 1 ]; do
+       popd > /dev/null
+    done
+
+    if grep --silent ${GUEST_MOUNT_POINT} /proc/mounts ; then
+        pr_info "Sync and unmount image"
+        sync
+        guestunmount ${GUEST_MOUNT_POINT} || guestunmount ${GUEST_MOUNT_POINT}
+    fi
+}
+
+function get_guest_root_dir {
+    echo $(find ${GUEST_MOUNT_POINT}/ostree/deploy/rhcos/deploy/ -maxdepth 1 -type d | tail -n 1)
+}
+
+
+function set_ignition_plartoform_id {
+    pr_info "Set ignition platform id in boot loader entries"
+    GUEST_LOADER_ENTRIES=$(find ${GUEST_BOOT_DIR}/loader/entries/ -type f -name *.conf)
+    for loader_entry in ${GUEST_LOADER_ENTRIES}; do
+        sed -i s/ignition.platform.id=qemu/ignition.platform.id=openstack/g ${loader_entry} > /dev/null 2>&1
+    done
+}
+
+function get_clustersetup_script {
+    pr_info "Getting clustersetup.sh"
+    if [ -f ${WORKSPACE}/clustersetup.sh ]; then
+        rm -f ${WORKSPACE}/clustersetup.sh
+    fi
+    curl --progress-bar -L -o ${WORKSPACE}/clustersetup.sh https://raw.githubusercontent.com/crc-org/crc-cloud/main/pkg/bundle/setup/clustersetup.sh
+}
+
+function modify_cluster_setup_script {
+    pr_info "Modifying clustersetup.sh"
+    # Use a date-stamp for the log-file
+    sed -i 's/_RANDOM_SUFFIX_/clustersetup-\$(date --utc +%FT%TZ)/g' ${WORKSPACE}/clustersetup.sh
+    
+    # Remove redirect to /dev/null so log messages also end up in journal for unit clustersetup.service
+    sed -i 's|LOG_FILE > /dev/null|LOG_FILE|g' ${WORKSPACE}/clustersetup.sh
+}
+
+function install_clustersetup_script {
+    pr_info "Installing clustersetup.sh"
+    cp ${WORKSPACE}/clustersetup.sh ${GUEST_USR_LOCAL_DIR}/bin/clustersetup.sh
+    pr_info "Make clustersetup.sh executable"
+    chmod +x ${GUEST_USR_LOCAL_DIR}/bin/clustersetup.sh
+}
+
+
+function install_systemd_services {
+    for service in clustersetup.path clustersetup.service; do
+        pr_info "Adding systemd service: ${service}"
+        if ! [ -f ${FILES_DIR}/${service} ]; then
+            pr_error "File ${FILES_DIR}/${service} not found!"
+        fi
+        cp ${FILES_DIR}/${service} ${GUEST_ROOT_DIR}/etc/systemd/system/
+    done
+}
+
+function manage_services {
+    pr_info "Enable systemd services in chroot"
+    unshare -r chroot ${GUEST_ROOT_DIR} << EOF_CHROOT_SCRIPT
+systemctl enable afterburn-sshkeys@core.service > /dev/null 2>&1
+systemctl disable clustersetup.service > /dev/null 2>&1
+systemctl enable clustersetup.path > /dev/null 2>&1
+systemctl disable qemu-guest-agent.service > /dev/null 2>&1
+EOF_CHROOT_SCRIPT
+}
+
+trap 'sync_and_unmount_image' EXIT
+
+download_bundle
+copy_base_image
+get_clustersetup_script
+modify_cluster_setup_script
+
+# Modify image
+mount_image
+GUEST_ROOT_DIR=$(get_guest_root_dir)
+set_ignition_plartoform_id
+install_clustersetup_script
+install_systemd_services
+manage_services
+sync_and_unmount_image
+
+pr_end "Image crc-openstack-${BUNDLE_VERSION}.qcow2 created."
