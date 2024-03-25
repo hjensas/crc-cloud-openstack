@@ -122,26 +122,9 @@ function set_ignition_plartoform_id {
     done
 }
 
-function get_clustersetup_script {
-    pr_info "Getting clustersetup.sh"
-    if [ -f ${WORKSPACE}/clustersetup.sh ]; then
-        rm -f ${WORKSPACE}/clustersetup.sh
-    fi
-    curl --progress-bar -L -o ${WORKSPACE}/clustersetup.sh https://raw.githubusercontent.com/crc-org/crc-cloud/main/pkg/bundle/setup/clustersetup.sh
-}
-
-function modify_cluster_setup_script {
-    pr_info "Modifying clustersetup.sh"
-    # Use a date-stamp for the log-file
-    sed -i 's/_RANDOM_SUFFIX_/clustersetup-\$(date --utc +%FT%TZ)/g' ${WORKSPACE}/clustersetup.sh
-    
-    # Remove redirect to /dev/null so log messages also end up in journal for unit clustersetup.service
-    sed -i 's|LOG_FILE > /dev/null|LOG_FILE|g' ${WORKSPACE}/clustersetup.sh
-}
-
 function install_clustersetup_script {
     pr_info "Installing clustersetup.sh"
-    cp ${WORKSPACE}/clustersetup.sh ${GUEST_USR_LOCAL_DIR}/bin/clustersetup.sh
+    cp ${FILES_DIR}/clustersetup.sh ${GUEST_USR_LOCAL_DIR}/bin/clustersetup.sh
     pr_info "Make clustersetup.sh executable"
     chmod +x ${GUEST_USR_LOCAL_DIR}/bin/clustersetup.sh
 }
@@ -171,8 +154,6 @@ trap 'sync_and_unmount_image' EXIT
 
 download_bundle
 copy_base_image
-get_clustersetup_script
-modify_cluster_setup_script
 
 # Modify image
 mount_image
