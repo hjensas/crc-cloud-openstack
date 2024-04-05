@@ -8,16 +8,10 @@ Wants=network-online.target
 [Service]
 User=core
 WorkingDirectory=/var/home/core
-EnvironmentFile=/run/metadata/afterburn
-ExecStartPre=/bin/bash -c '/usr/bin/grep PASS_DEVELOPER /var/home/core/crc_passwords || /usr/bin/echo PASS_DEVELOPER=$(uuidgen) | /usr/bin/tee -a /var/home/core/crc_passwords > /dev/null'
-ExecStartPre=/bin/bash -c '/usr/bin/grep PASS_KUBEADMIN /var/home/core/crc_passwords || /usr/bin/echo PASS_KUBEADMIN=$(uuidgen) | /usr/bin/tee -a /var/home/core/crc_passwords > /dev/null'
-ExecStartPre=/bin/bash -c '/usr/bin/grep PASS_REDHAT /var/home/core/crc_passwords || /usr/bin/echo PASS_REDHAT=$(uuidgen) | /usr/bin/tee -a /var/home/core/crc_passwords > /dev/null'
-# Save the afterburn authorized keys - clustersetup replaces it ...
-ExecStartPre=/bin/bash -c '/usr/bin/cat /var/home/core/.ssh/authorized_keys.d/afterburn | /usr/bin/tee -a /var/home/core/.ssh/authorized_keys > /dev/null'
-# clustersetup expects the public key to be in /var/home/core/id_rsa.pub
-ExecStartPre=/bin/bash -c '/usr/bin/tail --lines=1 /var/home/core/.ssh/authorized_keys.d/afterburn | tee /var/home/core/id_rsa.pub > /dev/null'
+Environment="SUDO_PREFIX=sudo"
+ExecStartPre=/bin/bash -c 'sudo chcon -t bin_t /usr/local/bin/clustersetup.sh'
 # Run clustersetu.sh
-ExecStart=bash -c 'source /var/home/core/crc_passwords && IIP=$AFTERBURN_OPENSTACK_IPV4_LOCAL EIP=${AFTERBURN_OPENSTACK_IPV4_PUBLIC:=AFTERBURN_OPENSTACK_IPV4_LOCAL} PULL_SECRET=$(cat /var/home/core/pull-secret.txt | base64 | tr -d "\n") sudo -E /usr/local/bin/clustersetup.sh'
+ExecStart=/usr/local/bin/clustersetup.sh
 # Add file to block service re-run. 
 ExecStartPost=/usr/bin/touch /var/home/core/.clustersetup_ran
 SELinuxContext=system_u:system_r:unconfined_service_t:s0

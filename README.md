@@ -40,9 +40,8 @@ Configuration via environment variables.
    [INF] Extracting bundle
    ......................................................
    [INF] Creating a copy of the base image
-   [INF] Getting clustersetup.sh
-   ########################################################### 100.0%
-   [INF] Modifying clustersetup.sh
+   [INF] Bundle extracted
+   [INF] Creating a copy of the base image
    [INF] Mounting image
    [INF] Set ignition platform id in boot loader entries
    [INF] Installing clustersetup.sh
@@ -108,11 +107,7 @@ openstack security group rule create sg_crc_openstack --protocol tcp --dst-port 
    ```bash
    ssh core@192.168.254.169 journalctl -f -u clustersetup.service
    ```
-6. Get the kubeconfig file:
+6. Get the tarball with kubeconfig, cluster info and passwords file:
    ```bash
-   scp core@192.168.254.169:/opt/kubeconfig crc_kubeconfig
-   ```
-7. Get the passwords file:
-   ```bash
-   scp core@192.168.254.169:crc_passwords crc_passwords
+   scp core@192.168.254.169:crc_config.tar.gz .
    ```
